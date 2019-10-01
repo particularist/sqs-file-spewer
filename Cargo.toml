@@ -1,0 +1,15 @@
+[package]
+name = "sqs-file-spewer"
+version = "0.1.0"
+authors = ["Ray Diaz <raydiaz@tuta.io>"]
+edition = "2018"
+
+[dependencies]
+quicli = "0.3"
+serde_json = "1.0"
+rusoto_core = "0.40.0"
+rusoto_sqs = "0.40.0"
+rusoto_sts = "0.40.0"
+tokio-core = "0.1.17"
+assert_cmd = "0.11"
+predicates = "1.0"
