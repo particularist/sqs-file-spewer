@@ -21,7 +21,9 @@ struct Cli {
     #[structopt(long="filename", short="f")]
     filename: String,
     #[structopt(long="batch_size", short="b", default_value="10")]
-    batch_size: usize
+    batch_size: usize,
+    #[structopt(long="profile", short="p")]
+    profile: String
 }
 
 fn get_credentials(profile: &str) -> ProfileProvider {
@@ -44,7 +46,7 @@ fn print_queue_urls(res: ListQueuesResult){
 
 main!(|args: Cli|{
     let region = Region::UsEast1;
-    let client = SqsClient::new_with(HttpClient::new().unwrap(), get_credentials("DEV-US"), region);
+    let client = SqsClient::new_with(HttpClient::new().unwrap(), get_credentials(&args.profile), region);
     let q_rq = ListQueuesRequest::default();
     let qs = client.list_queues(q_rq);
     let mut core = Core::new().unwrap();
