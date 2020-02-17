@@ -1,7 +1,6 @@
 extern crate rusoto_core;
 extern crate rusoto_sqs;
 extern crate rusoto_sts;
-extern crate tokio_core;
 
 #[macro_use]
 extern crate quicli;
@@ -10,10 +9,10 @@ use rusoto_sqs::{ SendMessageBatchRequest, SendMessageBatchRequestEntry };
 use rusoto_core::credential::ProfileProvider;
 use rusoto_core::{ HttpClient, Region };
 use rusoto_sqs::{SqsClient, Sqs, ListQueuesRequest, ListQueuesResult};
-use tokio_core::reactor::Core;
 use std::io;
 use std::io::prelude::*;
 use std::fs::File;
+use rayon::prelude::*;
 use quicli::prelude::*;
 
 #[derive(Debug, StructOpt)]
@@ -45,16 +44,40 @@ fn print_queue_urls(res: ListQueuesResult){
 }
 
 main!(|args: Cli|{
-    let region = Region::UsEast1;
-    let client = SqsClient::new_with(HttpClient::new().unwrap(), get_credentials(&args.profile), region);
-    let q_rq = ListQueuesRequest::default();
-    let qs = client.list_queues(q_rq);
-    let mut core = Core::new().unwrap();
-    match core.run(qs) {
-        Ok(q_urls) => print_queue_urls(q_urls),
-        Err(e) => panic!("Nothing to see here:{}", e),
-    }
+    let client = SqsClient::new(Region::Custom {
+        name: "us-east-1".to_owned(),
+        endpoint: "http://localhost:4576".to_owned(),
+    });
+    batchSubmit(args.filename) 
 });
+
+fn batchSubmit(filename: String){
+    let mut v: Vec<String> = vec![];
+    let file = match File::open(&filename) {
+        Err(e) => panic!("Could not open {}: {}", &filename, e),
+        Ok(f) => f,
+    };
+
+    let batch_size = 5;
+    {
+        for l in io::BufReader::new(file).lines() {
+            if &v.len() < &batch_size {
+                match l {
+                    Ok(line) => v.push(line.clone()),
+                    Err(e) => panic!("Could not grab line {}", e),
+                }
+            }else{
+                //Preparing batch
+                let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
+                let msg_batch = sqs_send_message_batch_req(&v, &q_url);
+                assert_eq!(msg_batch.entries.len(), 5);
+                assert_eq!(msg_batch.queue_url, q_url);
+                msg_batch.entries.iter().for_each(|e| assert_ne!(e.message_body, ""));
+                v.clear()
+            }
+        }
+    }
+}
 
 fn message_body_to_smbre(body: &String) -> SendMessageBatchRequestEntry {
     let mut se = SendMessageBatchRequestEntry::default();
