@@ -51,41 +51,41 @@ main!(|args: Cli|{
     batchSubmit(args.filename) 
 });
 
+
 fn batchSubmit(filename: String){
-    let mut v: Vec<String> = vec![];
+    let v: Vec<String> = vec![];
     let file = match File::open(&filename) {
         Err(e) => panic!("Could not open {}: {}", &filename, e),
         Ok(f) => f,
     };
 
-    let batch_size = 5;
     {
-        for l in io::BufReader::new(file).lines() {
-            if &v.len() < &batch_size {
-                match l {
-                    Ok(line) => v.push(line.clone()),
-                    Err(e) => panic!("Could not grab line {}", e),
-                }
-            }else{
-                //Preparing batch
-                let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
-                let msg_batch = sqs_send_message_batch_req(&v, &q_url);
-                assert_eq!(msg_batch.entries.len(), 5);
-                assert_eq!(msg_batch.queue_url, q_url);
-                msg_batch.entries.iter().for_each(|e| assert_ne!(e.message_body, ""));
-                v.clear()
-            }
-        }
+        let br = io::BufReader::new(file);
+
+        let some_v = &br.lines().collect::<Vec<_>>();
+        some_v.par_iter().chunks(10).for_each(|l| println!("{:?}", l));
+        // some_v.chunks(5).into_par_iter().map(|c| println!("{:02?}", c));
+        //for c in some_v.chunks(5) {
+        //    println!("{:02?}", c);
+        //}
+
+        //Preparing batch
+        //let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
+        //let msg_batch = sqs_send_message_batch_req(&v, &q_url);
+        //assert_eq!(msg_batch.entries.len(), 5);
+        //assert_eq!(msg_batch.queue_url, q_url);
+        //msg_batch.entries.iter().for_each(|e| assert_ne!(e.message_body, ""));
+
     }
 }
 
-fn message_body_to_smbre(body: &String) -> SendMessageBatchRequestEntry {
+fn message_body_to_smbre(body: &str) -> SendMessageBatchRequestEntry {
     let mut se = SendMessageBatchRequestEntry::default();
     se.message_body = body.to_owned();
     se
 }
 
-fn sqs_send_message_batch_req(msg_batch: &Vec<String>, q_url: &String) -> SendMessageBatchRequest {
+fn sqs_send_message_batch_req(msg_batch: &Vec<&str>, q_url: &String) -> SendMessageBatchRequest {
    let mut req = SendMessageBatchRequest::default();
    req.queue_url = q_url.to_owned();
    let entries: Vec<SendMessageBatchRequestEntry> = msg_batch.into_iter().map(|m| message_body_to_smbre(m)).collect();
