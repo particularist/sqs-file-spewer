@@ -1,14 +1,20 @@
+extern crate futures;
 extern crate rusoto_core;
 extern crate rusoto_sqs;
 extern crate rusoto_sts;
+extern crate tokio_core;
 
 #[macro_use]
 extern crate quicli;
 
-use rusoto_sqs::{ SendMessageBatchRequest, SendMessageBatchRequestEntry };
+use std::thread;
+use std::sync::mpsc;
+use rusoto_sqs::{ SendMessageBatchRequest, SendMessageBatchRequestEntry, SendMessageBatchResult, SendMessageBatchError };
 use rusoto_core::credential::ProfileProvider;
-use rusoto_core::{ HttpClient, Region };
+use futures::future::Future;
+use rusoto_core::{ HttpClient, Region, RusotoError};
 use rusoto_sqs::{SqsClient, Sqs, ListQueuesRequest, ListQueuesResult};
+use tokio_core::reactor::Core;
 use std::io;
 use std::io::prelude::*;
 use std::fs::File;
@@ -48,47 +54,45 @@ main!(|args: Cli|{
         name: "us-east-1".to_owned(),
         endpoint: "http://localhost:4576".to_owned(),
     });
-    batchSubmit(args.filename) 
+    batchSubmit(args.filename, &client)
 });
 
 
-fn batchSubmit(filename: String){
-    let v: Vec<String> = vec![];
+fn batchSubmit(filename: String, client: &SqsClient) {
     let file = match File::open(&filename) {
         Err(e) => panic!("Could not open {}: {}", &filename, e),
         Ok(f) => f,
     };
-
     {
-        let br = io::BufReader::new(file);
-
-        let some_v = &br.lines().collect::<Vec<_>>();
-        some_v.par_iter().chunks(10).for_each(|l| println!("{:?}", l));
-        // some_v.chunks(5).into_par_iter().map(|c| println!("{:02?}", c));
-        //for c in some_v.chunks(5) {
-        //    println!("{:02?}", c);
-        //}
-
-        //Preparing batch
-        //let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
-        //let msg_batch = sqs_send_message_batch_req(&v, &q_url);
-        //assert_eq!(msg_batch.entries.len(), 5);
-        //assert_eq!(msg_batch.queue_url, q_url);
-        //msg_batch.entries.iter().for_each(|e| assert_ne!(e.message_body, ""));
+        
+        let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
+        let (s, r) = mpsc::channel();
+        thread::spawn(move || {
+            let lines: Vec<_> = io::BufReader::new(file).lines().collect(); 
+            lines.as_slice().chunks(10).for_each(|l| s.clone().send(l.to_owned()).unwrap());
+        });
 
     }
 }
 
-fn message_body_to_smbre(body: &str) -> SendMessageBatchRequestEntry {
+fn batch_sqs_send(req: SendMessageBatchRequest, client: &SqsClient)
+
+-> impl Future<Item = SendMessageBatchResult, Error = RusotoError<SendMessageBatchError>>
+{
+    client.send_message_batch(req)
+}
+
+
+fn message_body_to_smbre(body: String) -> SendMessageBatchRequestEntry {
     let mut se = SendMessageBatchRequestEntry::default();
     se.message_body = body.to_owned();
     se
 }
 
-fn sqs_send_message_batch_req(msg_batch: &Vec<&str>, q_url: &String) -> SendMessageBatchRequest {
+fn sqs_send_message_batch_req(msg_batch: &Vec<std::result::Result<String, std::io::Error>>, q_url: &String) -> SendMessageBatchRequest {
    let mut req = SendMessageBatchRequest::default();
    req.queue_url = q_url.to_owned();
-   let entries: Vec<SendMessageBatchRequestEntry> = msg_batch.into_iter().map(|m| message_body_to_smbre(m)).collect();
+   let entries: Vec<SendMessageBatchRequestEntry> = msg_batch.into_iter().map(|m| message_body_to_smbre(m.unwrap())).collect();
    req.entries = entries;
    req
 }
@@ -101,18 +105,19 @@ fn batch_messages_test() {
         Ok(f) => f,
     };
     let q_url = "http://test/".to_string();
-    let mut v: Vec<String> = vec![];
+    let mut core = Core::new().unwrap();
+    let mut v: Vec<&String> = vec![];
     let batch_size = 5;
     {
         for l in io::BufReader::new(file).lines() {
             if &v.len() < &batch_size {
                 match l {
-                    Ok(line) => v.push(line.clone()),
+                    Ok(line) => v.push(&line.clone()),
                     Err(e) => panic!("Could not grab line {}", e),
                 }
             }else{
                 //Preparing batch
-                let msg_batch = sqs_send_message_batch_req(&v, &q_url);
+                let msg_batch = sqs_send_message_batch_req(&v.chunks(1), &q_url);
                 assert_eq!(msg_batch.entries.len(), 5);
                 assert_eq!(msg_batch.queue_url, q_url);
                 msg_batch.entries.iter().for_each(|e| assert_ne!(e.message_body, ""));
