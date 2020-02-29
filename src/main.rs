@@ -63,16 +63,25 @@ fn batchSubmit(filename: String, client: &SqsClient) {
         Err(e) => panic!("Could not open {}: {}", &filename, e),
         Ok(f) => f,
     };
-    {
-        
-        let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
-        let (s, r) = mpsc::channel();
-        thread::spawn(move || {
-            let lines: Vec<_> = io::BufReader::new(file).lines().collect(); 
-            lines.as_slice().chunks(10).for_each(|l| s.clone().send(l.to_owned()).unwrap());
-        });
+    let lines: Vec<String> = io::BufReader::new(file).lines().map(|l| l.unwrap().to_string()).collect(); 
+    
+    let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
+    let (s, r) = mpsc::channel();
+    thread::spawn(move || {
+        lines.as_slice().chunks(10).for_each(|l| match s.send(l.to_owned()) {
+            Ok(_) => {},
+            Err(_) =>  println!("Receiver has stopped listening")
+        })
+    });
 
+    loop{
+        match r.recv() {
+            Ok(lns) => println!("{:?}", lns),
+            Err(_) => panic!("Error occurred receiving lines")
+        }
     }
+
+   
 }
 
 fn batch_sqs_send(req: SendMessageBatchRequest, client: &SqsClient)
@@ -83,7 +92,7 @@ fn batch_sqs_send(req: SendMessageBatchRequest, client: &SqsClient)
 }
 
 
-fn message_body_to_smbre(body: String) -> SendMessageBatchRequestEntry {
+fn message_body_to_smbre(body: &String) -> SendMessageBatchRequestEntry {
     let mut se = SendMessageBatchRequestEntry::default();
     se.message_body = body.to_owned();
     se
@@ -92,7 +101,7 @@ fn message_body_to_smbre(body: String) -> SendMessageBatchRequestEntry {
 fn sqs_send_message_batch_req(msg_batch: &Vec<std::result::Result<String, std::io::Error>>, q_url: &String) -> SendMessageBatchRequest {
    let mut req = SendMessageBatchRequest::default();
    req.queue_url = q_url.to_owned();
-   let entries: Vec<SendMessageBatchRequestEntry> = msg_batch.into_iter().map(|m| message_body_to_smbre(m.unwrap())).collect();
+   let entries: Vec<SendMessageBatchRequestEntry> = msg_batch.into_iter().map(|m| message_body_to_smbre(m.as_ref().unwrap())).collect();
    req.entries = entries;
    req
 }
