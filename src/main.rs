@@ -7,6 +7,7 @@ extern crate tokio_core;
 #[macro_use]
 extern crate quicli;
 
+use uuid::Uuid;
 use std::thread;
 use std::sync::mpsc;
 use rusoto_sqs::{ SendMessageBatchRequest, SendMessageBatchRequestEntry, SendMessageBatchResult, SendMessageBatchError };
@@ -63,9 +64,7 @@ fn batchSubmit(filename: String, client: &SqsClient) {
         Err(e) => panic!("Could not open {}: {}", &filename, e),
         Ok(f) => f,
     };
-    let lines: Vec<String> = io::BufReader::new(file).lines().map(|l| l.unwrap().to_string()).collect(); 
-    
-    let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
+    let lines: Vec<String> = io::BufReader::new(file).lines().map(|l| l.unwrap().to_string()).collect();
     let (s, r) = mpsc::channel();
     thread::spawn(move || {
         lines.as_slice().chunks(10).for_each(|l| match s.send(l.to_owned()) {
@@ -74,9 +73,15 @@ fn batchSubmit(filename: String, client: &SqsClient) {
         })
     });
 
-    loop{
+    let mut core = Core::new().unwrap();
+    let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
+
+    loop {
         match r.recv() {
-            Ok(lns) => println!("{:?}", lns),
+            Ok(lns) => match core.run(client.send_message_batch(sqs_send_message_batch_req(lns, &q_url))) {
+                Ok(r) => println!("Success! {:?}",r),
+                Err(e) => panic!("huh...{:?}", e)
+            },
             Err(_) => panic!("Error occurred receiving lines")
         }
     }
@@ -92,16 +97,17 @@ fn batch_sqs_send(req: SendMessageBatchRequest, client: &SqsClient)
 }
 
 
-fn message_body_to_smbre(body: &String) -> SendMessageBatchRequestEntry {
+fn message_body_to_smbre(body: String) -> SendMessageBatchRequestEntry {
     let mut se = SendMessageBatchRequestEntry::default();
-    se.message_body = body.to_owned();
+    se.id = format!("{}", Uuid::new_v4());
+    se.message_body = body;
     se
 }
 
-fn sqs_send_message_batch_req(msg_batch: &Vec<std::result::Result<String, std::io::Error>>, q_url: &String) -> SendMessageBatchRequest {
+fn sqs_send_message_batch_req(msg_batch: Vec<String>, q_url: &String) -> SendMessageBatchRequest {
    let mut req = SendMessageBatchRequest::default();
    req.queue_url = q_url.to_owned();
-   let entries: Vec<SendMessageBatchRequestEntry> = msg_batch.into_iter().map(|m| message_body_to_smbre(m.as_ref().unwrap())).collect();
+   let entries: Vec<SendMessageBatchRequestEntry> = msg_batch.into_iter().map(|m| message_body_to_smbre(m)).collect();
    req.entries = entries;
    req
 }
@@ -113,26 +119,22 @@ fn batch_messages_test() {
         Err(e) => panic!("Could not open {}: {}", test_message_file_name, e),
         Ok(f) => f,
     };
-    let q_url = "http://test/".to_string();
+    let q_url = "http://test/";
     let mut core = Core::new().unwrap();
-    let mut v: Vec<&String> = vec![];
-    let batch_size = 5;
-    {
-        for l in io::BufReader::new(file).lines() {
-            if &v.len() < &batch_size {
-                match l {
-                    Ok(line) => v.push(&line.clone()),
-                    Err(e) => panic!("Could not grab line {}", e),
-                }
-            }else{
-                //Preparing batch
-                let msg_batch = sqs_send_message_batch_req(&v.chunks(1), &q_url);
-                assert_eq!(msg_batch.entries.len(), 5);
-                assert_eq!(msg_batch.queue_url, q_url);
-                msg_batch.entries.iter().for_each(|e| assert_ne!(e.message_body, ""));
-                v.clear()
-            }
-        }
-    }
+    let client = SqsClient::new(Region::Custom {
+        name: "us-east-1".to_owned(),
+        endpoint: "http://localhost:32834".to_owned(),
+    });
+    let lines: Vec<String> = io::BufReader::new(file).lines().map(|l| l.unwrap().to_string()).collect();
+    lines.as_slice().chunks(10).for_each(|l| match core.run(batch_sqs_send(sqs_send_message_batch_req(l.to_owned(), q_url.to_owned()), &client)) {
+        Ok(s) => println!("Found this {:?}",s),
+        Err(e) => panic!("Error completing futures: {}", e),
+    });
+    //
+    // let r = ListQueuesRequest::default();
+    // match core.run(client.list_queues(r)) {
+    //     Ok(s) => println!("Found this{:?}", s),
+    //     Err(e) => panic!("Ahh! {}", e)
+    // }
 }
 
