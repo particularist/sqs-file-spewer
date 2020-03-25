@@ -19,11 +19,17 @@ use tokio_core::reactor::Core;
 use std::io;
 use std::io::prelude::*;
 use std::fs::File;
-use rayon::prelude::*;
+use structopt::StructOpt;
 use quicli::prelude::*;
 
 #[derive(Debug, StructOpt)]
 struct Cli {
+    #[structopt(long="region", short="r")]
+    region: String,
+    #[structopt(long="custom_aws_endpoint_url", short="c")]
+    custom_aws_endpoint_url: Option<String>,
+    #[structopt(long="q_url", short="q")]
+    q_url: String,
     #[structopt(long="filename", short="f")]
     filename: String,
     #[structopt(long="batch_size", short="b", default_value="10")]
@@ -50,21 +56,28 @@ fn print_queue_urls(res: ListQueuesResult){
     }
 }
 
-main!(|args: Cli|{
-    let client = SqsClient::new(Region::Custom {
-        name: "us-east-1".to_owned(),
-        endpoint: "http://localhost:4576".to_owned(),
-    });
-    batchSubmit(args.filename, &client)
-});
+fn main() -> CliResult {
+    let args = Cli::from_args();
+    let reg = match args.custom_aws_endpoint_url {
+        Some(ce) =>  Region::Custom {
+            name: args.region,
+            endpoint: ce,
+        },
+        None => args.region.parse().unwrap()
+    };
+    let client = SqsClient::new(reg);
+    batch_submit(args.filename, &client, args.q_url);
+    Ok(())
+}
 
 
-fn batchSubmit(filename: String, client: &SqsClient) {
+fn batch_submit(filename: String, client: &SqsClient, q_url: String) {
     let file = match File::open(&filename) {
         Err(e) => panic!("Could not open {}: {}", &filename, e),
         Ok(f) => f,
     };
-    let lines: Vec<String> = io::BufReader::new(file).lines().map(|l| l.unwrap().to_string()).collect();
+    let lines: Vec<String> = io::BufReader::new(file).lines().map(|l| l.unwrap().to_string()).collect(); 
+    
     let (s, r) = mpsc::channel();
     thread::spawn(move || {
         lines.as_slice().chunks(10).for_each(|l| match s.send(l.to_owned()) {
@@ -74,7 +87,6 @@ fn batchSubmit(filename: String, client: &SqsClient) {
     });
 
     let mut core = Core::new().unwrap();
-    let q_url = "http://localhost:4576/queue/NewQueue".to_owned();
 
     loop {
         match r.recv() {
@@ -119,14 +131,14 @@ fn batch_messages_test() {
         Err(e) => panic!("Could not open {}: {}", test_message_file_name, e),
         Ok(f) => f,
     };
-    let q_url = "http://test/";
+    let q_url = "http://test/".to_owned();
     let mut core = Core::new().unwrap();
     let client = SqsClient::new(Region::Custom {
         name: "us-east-1".to_owned(),
         endpoint: "http://localhost:32834".to_owned(),
     });
     let lines: Vec<String> = io::BufReader::new(file).lines().map(|l| l.unwrap().to_string()).collect();
-    lines.as_slice().chunks(10).for_each(|l| match core.run(batch_sqs_send(sqs_send_message_batch_req(l.to_owned(), q_url.to_owned()), &client)) {
+    lines.as_slice().chunks(10).for_each(|l| match core.run(batch_sqs_send(sqs_send_message_batch_req(l.to_owned(), &q_url), &client)) {
         Ok(s) => println!("Found this {:?}",s),
         Err(e) => panic!("Error completing futures: {}", e),
     });
